@@ -5,6 +5,10 @@ import { addDays } from '../../lib/timezone';
 import {
   isValidTime, rangeProblem, findClash, formatRange, getBufferMinutes,
 } from '../../lib/slots';
+import {
+  sendEmail, musicianAddress, newRequestForMusician,
+} from '../../lib/email';
+import { addGigToCalendar, removeGigFromCalendar } from '../../lib/googleCalendar';
 
 const LIMITS = { name: 120, email: 200, phone: 40, type: 60, message: 2000 };
 const EVENT_TYPES = ['Wedding', 'Private party', 'Corporate event', 'Club / bar gig', 'Other'];
@@ -60,6 +64,29 @@ async function dayIsBlocked(supabase, date, fullDays) {
   return !!data;
 }
 
+async function getProfile(supabase) {
+  const { data } = await supabase.from('profile').select('name, email').eq('id', 1).maybeSingle();
+  return data || {};
+}
+
+// Clients are contacted by him personally (phone or his own email), so the
+// only automated email is the heads-up to him about a new request. It's
+// awaited so the server doesn't shut down mid-send, but a failure never
+// blocks the booking.
+async function notifyMusician(row, profile) {
+  const to = musicianAddress(profile);
+  if (!to) return;
+  await sendEmail({ to, ...newRequestForMusician(row, profile) }).catch(() => {});
+}
+
+// Phone numbers vary a lot (0917 123 4567, +63 917 123 4567, (02) 8123-4567),
+// so check the characters and the digit count rather than one exact format.
+function looksLikePhone(s) {
+  if (!/^[+()\-.\s\d]+$/.test(s)) return false;
+  const digits = s.replace(/\D/g, '');
+  return digits.length >= 7 && digits.length <= 15;
+}
+
 export default async function handler(req, res) {
   try {
     const supabase = getSupabase();
@@ -82,6 +109,16 @@ export default async function handler(req, res) {
       }
 
       const body = req.body || {};
+
+      // Spam check. Real people never see the hidden "website" field and take
+      // more than a couple of seconds to fill in the form; bots fill in every
+      // field and submit instantly. Pretend it worked so they don't adapt.
+      const elapsed = Number(body.elapsed_ms);
+      if (String(body.website || '').trim() !== '' || !(elapsed >= 2500)) {
+        console.warn('Booking request ignored as likely spam from', clientIp(req));
+        return res.status(200).json({ ok: true });
+      }
+
       const date = clean(body.date, 10);
       const name = clean(body.name, LIMITS.name);
       const email = clean(body.email, LIMITS.email);
@@ -94,6 +131,7 @@ export default async function handler(req, res) {
 
       if (!isValidDateKey(date)) return res.status(400).json({ error: 'Invalid date' });
       if (!name) return res.status(400).json({ error: 'Name is required' });
+      if (!looksLikePhone(phone)) return res.status(400).json({ error: 'A phone number is required so he can call you.' });
       if (!looksLikeEmail(email)) return res.status(400).json({ error: 'A valid email is required' });
       if (!isValidTime(startTime) || !isValidTime(endTime)) {
         return res.status(400).json({ error: 'Please give a start and end time.' });
@@ -117,24 +155,55 @@ export default async function handler(req, res) {
         });
       }
 
-      const { error } = await supabase.from('requests').insert({
+      const row = {
         date, name, email, phone, type, message,
         start_time: startTime, end_time: endTime,
         status: 'pending',
-      });
+      };
+      const { error } = await supabase.from('requests').insert(row);
       if (error) return res.status(500).json({ error: error.message });
+
+      await notifyMusician(row, await getProfile(supabase));
       return res.status(200).json({ ok: true });
     }
 
     if (req.method === 'PATCH') {
       if (!requireAdmin(req, res)) return;
       const { id, status } = req.body || {};
-      if (!['approved', 'declined'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
+      if (!['approved', 'declined', 'cancelled'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
 
       const { data: reqRow, error: fetchErr } = await supabase.from('requests').select('*').eq('id', id).maybeSingle();
       if (fetchErr || !reqRow) return res.status(404).json({ error: 'Request not found' });
 
+      // A confirmed gig he can no longer make.
+      if (status === 'cancelled') {
+        if (reqRow.status !== 'approved') {
+          return res.status(409).json({ error: 'Only confirmed gigs can be cancelled.' });
+        }
+        const reason = clean(req.body.reason, 1000);
+        const blockDay = !!req.body.blockDay;
+
+        const { error: updateErr } = await supabase.from('requests')
+          .update({ status: 'cancelled', cancel_reason: reason || null, cancelled_at: new Date().toISOString() })
+          .eq('id', id);
+        if (updateErr) return res.status(500).json({ error: updateErr.message });
+
+        const calendar = await removeGigFromCalendar(reqRow.google_event_id);
+        if (blockDay) await supabase.from('dates').upsert({ date: reqRow.date, status: 'blocked' });
+
+        return res.status(200).json({
+          ok: true,
+          blocked: blockDay,
+          calendar: { removed: !!calendar.removed, skipped: !!calendar.skipped, error: calendar.error || null },
+        });
+      }
+
       if (status === 'declined') {
+        // Declining is for pending requests. A confirmed gig is cancelled
+        // instead, so its calendar event is cleaned up properly.
+        if (reqRow.status !== 'pending') {
+          return res.status(409).json({ error: 'Only pending requests can be declined.' });
+        }
         await supabase.from('requests').update({ status: 'declined' }).eq('id', id);
         return res.status(200).json({ ok: true });
       }
@@ -149,8 +218,8 @@ export default async function handler(req, res) {
       const buffer = await getBufferMinutes(supabase);
       const { ranges, fullDays } = await busyAround(supabase, reqRow.date, { ignoreRequestId: id });
 
-      if (fullDays.has(reqRow.date)) {
-        return res.status(409).json({ error: 'That day is blocked on the Google Calendar.' });
+      if (await dayIsBlocked(supabase, reqRow.date, fullDays)) {
+        return res.status(409).json({ error: 'That day is blocked. Unblock it in Schedule first, or decline this request.' });
       }
 
       const clash = findClash(range, reqRow.date, ranges, buffer);
@@ -166,21 +235,43 @@ export default async function handler(req, res) {
       // other slots on the same day stay open for consideration.
       const { data: others } = await supabase
         .from('requests')
-        .select('id, date, start_time, end_time')
+        .select('*')
         .eq('status', 'pending')
         .in('date', [addDays(reqRow.date, -1), reqRow.date, addDays(reqRow.date, 1)]);
 
       const approvedByDate = { [reqRow.date]: [range] };
+      const autoDeclined = [];
       for (const other of others || []) {
         if (other.id === id) continue;
         if (!isValidTime(other.start_time) || !isValidTime(other.end_time)) continue;
         const otherRange = { start: other.start_time, end: other.end_time };
         if (findClash(otherRange, other.date, approvedByDate, buffer)) {
           await supabase.from('requests').update({ status: 'declined' }).eq('id', other.id);
+          autoDeclined.push(other);
         }
       }
 
-      return res.status(200).json({ ok: true });
+      // Put the gig in his Google Calendar. Skipped if this request already
+      // has an event, so a double-click can't create two.
+      let calendar = null;
+      if (!reqRow.google_event_id) {
+        calendar = await addGigToCalendar(reqRow);
+        if (calendar.eventId) {
+          await supabase.from('requests').update({ google_event_id: calendar.eventId }).eq('id', id);
+        }
+      }
+
+      // Nobody is emailed automatically any more, so hand back who was
+      // auto-declined - he'll want to call them.
+      return res.status(200).json({
+        ok: true,
+        autoDeclined: autoDeclined.map((o) => ({ name: o.name, phone: o.phone })),
+        calendar: calendar && {
+          added: !!calendar.eventId,
+          previewed: !!calendar.previewed,
+          error: calendar.error || null,
+        },
+      });
     }
 
     res.status(405).end();

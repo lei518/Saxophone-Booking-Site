@@ -40,9 +40,13 @@ export default async function handler(req, res) {
         ranges[date].push(...list);
       }
 
-      // Sort so the browser can list them in order.
-      for (const list of Object.values(ranges)) {
-        list.sort((a, b) => a.start.localeCompare(b.start));
+      // Once an approved gig is in his Google Calendar, the calendar feed
+      // reports it too - drop the duplicate, then sort for display.
+      for (const [date, list] of Object.entries(ranges)) {
+        const seen = new Set();
+        ranges[date] = list
+          .filter((r) => { const k = r.start + '-' + r.end; if (seen.has(k)) return false; seen.add(k); return true; })
+          .sort((a, b) => a.start.localeCompare(b.start));
       }
 
       return res.status(200).json({
