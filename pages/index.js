@@ -1,15 +1,58 @@
 import { useEffect, useRef, useState } from 'react';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
+import ThemeToggle from '../components/ThemeToggle';
 import { todayKey } from '../lib/timezone';
 import { formatRange, findClash, rangeProblem, isValidTime, DEFAULT_BUFFER_MINUTES } from '../lib/slots';
-import { videoEmbed, videoLines, venueLines, cleanTestimonials, parsePhotoDataUrl } from '../lib/media';
+import { videoEmbed, videoLines, cleanTestimonials, parsePhotoDataUrl } from '../lib/media';
 
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DOW = ["S","M","T","W","T","F","S"];
 
 function fmtKey(d){
   return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+// Fades and slides content up as it scrolls into view. Renders AS the given
+// tag (default div) rather than wrapping in an extra element, so it can be
+// dropped directly onto a grid item, a <figure>, etc. without disturbing
+// layout that depends on that element being a direct child.
+//
+// Safe by construction: the CSS only hides content once html.js is present
+// (see _document.js), so a slow or failed script never leaves the page
+// permanently blank - worst case, content just doesn't animate.
+function Reveal({ children, className = '', delay = 0, as: Tag = 'div', immediate = false, ...rest }){
+  const ref = useRef(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(()=>{
+    if(immediate){
+      // Above-the-fold content (the hero): play on mount, not on scroll -
+      // it's already on screen, so "enters the viewport" would never fire.
+      const raf = requestAnimationFrame(()=> setVisible(true));
+      return ()=> cancelAnimationFrame(raf);
+    }
+    const el = ref.current;
+    if(!el || typeof IntersectionObserver === 'undefined'){ setVisible(true); return; }
+    const obs = new IntersectionObserver((entries)=>{
+      entries.forEach((entry)=>{
+        if(entry.isIntersecting){ setVisible(true); obs.unobserve(entry.target); }
+      });
+    }, { threshold: 0.15, rootMargin: '0px 0px -8% 0px' });
+    obs.observe(el);
+    return ()=> obs.disconnect();
+  }, [immediate]);
+
+  return (
+    <Tag
+      ref={ref}
+      className={`reveal${visible ? ' reveal-visible' : ''}${className ? ' ' + className : ''}`}
+      style={delay ? { transitionDelay: `${delay}ms` } : undefined}
+      {...rest}
+    >
+      {children}
+    </Tag>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -57,14 +100,17 @@ export default function Home({ initialProfile, siteUrl }){
   const [today, setToday] = useState(null);
 
   const [bookingDate, setBookingDate] = useState(null);
+  const [modalVisible, setModalVisible] = useState(false); // drives the open/close animation
   const emptyForm = {name:'',email:'',phone:'',type:'Wedding',message:'',start_time:'18:00',end_time:'21:00',website:''};
   const [bookForm, setBookForm] = useState(emptyForm);
+  const [consent, setConsent] = useState(false);
   const [bookMsg, setBookMsg] = useState('');
   const [sending, setSending] = useState(false);
 
   const openedAt = useRef(0);     // when the form was opened, for the bot check
   const triggerRef = useRef(null); // the day button that opened the form
   const modalRef = useRef(null);
+  const closeTimer = useRef(null);
 
   useEffect(()=>{
     // Old bookmarks to /#admin still work - they land on the admin page.
@@ -104,17 +150,24 @@ export default function Home({ initialProfile, siteUrl }){
     openedAt.current = Date.now();
     setBookingDate(key);
     setBookForm({...emptyForm});
+    setConsent(false);
     setBookMsg('');
   }
 
   function closeBookingModal(){
-    setBookingDate(null);
-    // Put keyboard focus back on the day they came from.
-    setTimeout(()=> triggerRef.current && triggerRef.current.focus(), 0);
+    setModalVisible(false); // starts the fade/scale-out
+    clearTimeout(closeTimer.current);
+    closeTimer.current = setTimeout(()=>{
+      setBookingDate(null); // unmount only once the transition has actually finished
+      triggerRef.current && triggerRef.current.focus();
+    }, 220);
   }
 
   useEffect(()=>{
     if(!bookingDate) return;
+    setModalVisible(false);
+    const raf = requestAnimationFrame(()=> setModalVisible(true));
+
     const modal = modalRef.current;
     const first = modal && modal.querySelector('input:not([tabindex="-1"]), select, textarea');
     if(first) first.focus();
@@ -132,8 +185,14 @@ export default function Home({ initialProfile, siteUrl }){
     }
     document.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
-    return ()=>{ document.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
+    return ()=>{
+      cancelAnimationFrame(raf);
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = '';
+    };
   }, [bookingDate]);
+
+  useEffect(()=> ()=> clearTimeout(closeTimer.current), []); // don't touch state after the page itself unmounts
 
   // ----- availability -----
 
@@ -222,58 +281,84 @@ export default function Home({ initialProfile, siteUrl }){
 
   const firstName = (profile.name || '').trim().split(/\s+/)[0] || 'the musician';
   const videos = videoLines(profile.videos).map(videoEmbed).filter(Boolean);
-  const venues = venueLines(profile.venues);
   const quotes = cleanTestimonials(profile.testimonials);
 
   return (
     <>
       {head}
 
-      <div className="hero">
-        <svg className="hero-sax" viewBox="0 0 300 340" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path d="M120 20 L150 15 L200 60 L205 180 C205 220 175 250 150 260 C120 272 95 255 92 225 C89 198 108 178 132 178 C150 178 162 190 162 205 C162 216 154 224 144 224" stroke="#dcae4c" strokeWidth="4" fill="none" strokeLinecap="round"/>
-          <circle cx="150" cy="90" r="6" stroke="#dcae4c" strokeWidth="3" fill="none"/>
-          <circle cx="160" cy="115" r="6" stroke="#dcae4c" strokeWidth="3" fill="none"/>
-          <circle cx="168" cy="140" r="6" stroke="#dcae4c" strokeWidth="3" fill="none"/>
-          <circle cx="172" cy="167" r="6" stroke="#dcae4c" strokeWidth="3" fill="none"/>
-        </svg>
-        <div className="wrap hero-inner">
-          {profile.photo && !photoFailed && (
-            <img className="hero-photo" src={profile.photo} alt={profile.name} width="128" height="128" onError={()=>setPhotoFailed(true)} />
-          )}
-          <div className="eyebrow">Live saxophone for hire</div>
-          <h1>{profile.name}</h1>
-          <p className="tagline">{profile.tagline}</p>
-          <div className="hero-actions">
-            <a href="#calendar" className="btn btn-primary">Check open dates</a>
-            {videos.length > 0
-              ? <a href="#listen" className="btn btn-ghost">Hear {firstName} play</a>
-              : <a href="#about" className="btn btn-ghost">About</a>}
+      <header className="nav">
+        <div className="wrap nav-inner">
+          <a href="#top" className="nav-logo">{profile.name}</a>
+          <div className="nav-right">
+            <nav className="nav-links" aria-label="Main">
+              <a href="#top">Home</a>
+              <a href="#about">About</a>
+              <a href="#calendar">Booking</a>
+            </nav>
+            <ThemeToggle />
           </div>
+        </div>
+      </header>
+
+      <div className="hero" id="top">
+        <div className="wrap hero-grid">
+          <Reveal as="div" className="hero-text" immediate>
+            <div className="eyebrow">Live saxophone for hire</div>
+            <h1>{profile.name}</h1>
+            <p className="tagline">{profile.tagline}</p>
+            <div className="hero-actions">
+              <a href="#calendar" className="btn btn-primary">Check open dates</a>
+              {videos.length > 0
+                ? <a href="#listen" className="btn btn-ghost">Hear {firstName} play</a>
+                : <a href="#about" className="btn btn-ghost">About</a>}
+            </div>
+          </Reveal>
+          <Reveal as="div" className="hero-media" immediate delay={150}>
+            <div className="hero-image-frame">
+              {profile.photo && !photoFailed ? (
+                <img className="hero-image" src={profile.photo} alt={profile.name} onError={()=>setPhotoFailed(true)} />
+              ) : (
+                <div className="hero-placeholder" aria-hidden="true">
+                  <svg viewBox="0 0 200 200" width="72" height="72" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" strokeWidth="4">
+                    <path d="M58 34 Q142 30 142 92 Q142 152 92 152 Q60 152 60 126 Q60 106 82 106 Q100 106 100 121" strokeLinecap="round"/>
+                    <circle cx="120" cy="58" r="4.5" fill="currentColor" stroke="none"/>
+                    <circle cx="130" cy="76" r="4.5" fill="currentColor" stroke="none"/>
+                    <circle cx="134" cy="94" r="4.5" fill="currentColor" stroke="none"/>
+                  </svg>
+                </div>
+              )}
+            </div>
+          </Reveal>
         </div>
       </div>
 
-      <div className="wrap">
-        <div className="panel about" id="about">
-          <h2>A little about the sound</h2>
-          <p>{profile.bio}</p>
-          <div className="about-meta">
-            {profile.email && <div><b>Email:</b> <a href={`mailto:${profile.email}`}>{profile.email}</a></div>}
-            {profile.instagram && <div><b>Instagram:</b> {profile.instagram}</div>}
-          </div>
+      <section className="about-section" id="about" aria-labelledby="about-title">
+        <div className="wrap">
+          <Reveal as="div" className="section-head">
+            <div className="kicker">About</div>
+            <h2 id="about-title">A little about the sound</h2>
+          </Reveal>
+          <Reveal as="div" className="panel about" delay={100}>
+            <p>{profile.bio}</p>
+            <div className="about-meta">
+              {profile.email && <div><b>Email:</b> <a href={`mailto:${profile.email}`}>{profile.email}</a></div>}
+              {profile.instagram && <div><b>Instagram:</b> {profile.instagram}</div>}
+            </div>
+          </Reveal>
         </div>
-      </div>
+      </section>
 
       {videos.length > 0 && (
         <section id="listen" aria-labelledby="listen-title">
           <div className="wrap">
-            <div className="section-head">
+            <Reveal as="div" className="section-head">
               <div className="kicker">Listen</div>
               <h2 id="listen-title">Hear the sound</h2>
-            </div>
+            </Reveal>
             <div className={'videos' + (videos.length === 1 ? ' videos-one' : '')}>
               {videos.map((v, i) => (
-                <div className={'video' + (v.vertical ? ' video-vertical' : '')} key={v.src}>
+                <Reveal as="div" className={'video' + (v.vertical ? ' video-vertical' : '')} key={v.src} delay={Math.min(i, 4) * 90}>
                   <iframe
                     src={v.src}
                     title={`${profile.name} performing, video ${i + 1}`}
@@ -282,91 +367,97 @@ export default function Home({ initialProfile, siteUrl }){
                     referrerPolicy="strict-origin-when-cross-origin"
                     allowFullScreen
                   />
-                </div>
+                </Reveal>
               ))}
             </div>
           </div>
         </section>
       )}
 
-      {(quotes.length > 0 || venues.length > 0) && (
+      {quotes.length > 0 && (
         <section id="kind-words" aria-labelledby="kind-words-title" className="kind-words">
           <div className="wrap">
-            <div className="section-head">
-              <div className="kicker">{quotes.length ? 'Kind words' : 'Experience'}</div>
-              <h2 id="kind-words-title">{quotes.length ? 'What clients say' : `Where ${firstName} has played`}</h2>
+            <Reveal as="div" className="section-head">
+              <div className="kicker">Kind words</div>
+              <h2 id="kind-words-title">What clients say</h2>
+            </Reveal>
+            <div className="quotes">
+              {quotes.map((q, i) => (
+                <Reveal as="figure" className="quote" key={i} delay={Math.min(i, 4) * 90}>
+                  <blockquote>{q.quote}</blockquote>
+                  {q.who && <figcaption>{q.who}</figcaption>}
+                </Reveal>
+              ))}
             </div>
-            {quotes.length > 0 && (
-              <div className="quotes">
-                {quotes.map((q, i) => (
-                  <figure className="quote" key={i}>
-                    <blockquote>{q.quote}</blockquote>
-                    {q.who && <figcaption>{q.who}</figcaption>}
-                  </figure>
-                ))}
-              </div>
-            )}
-            {venues.length > 0 && (
-              <div className="venues">
-                {quotes.length > 0 && <h3>Played at</h3>}
-                <ul>{venues.map(v => <li key={v}>{v}</li>)}</ul>
-              </div>
-            )}
           </div>
         </section>
       )}
 
       <section id="calendar" aria-labelledby="calendar-title">
         <div className="wrap">
-          <div className="section-head">
+          <Reveal as="div" className="section-head">
             <div className="kicker">Availability</div>
             <h2 id="calendar-title">Open dates</h2>
-          </div>
-          {today && <Calendar
-            today={today}
-            currentMonth={currentMonth}
-            setCurrentMonth={setCurrentMonth}
-            statusFor={statusFor}
-            slotsFor={slotsFor}
-            onPick={openBookingModal}
-          />}
+          </Reveal>
+          {today && <Reveal as="div" delay={100}>
+            <Calendar
+              today={today}
+              currentMonth={currentMonth}
+              setCurrentMonth={setCurrentMonth}
+              statusFor={statusFor}
+              slotsFor={slotsFor}
+              onPick={openBookingModal}
+            />
+          </Reveal>}
         </div>
       </section>
 
-      <footer>
-        <span>{profile.name}</span> · booking site
+      <footer className="site-footer">
+        <div className="wrap">
+          <span>&copy; {new Date().getFullYear()} PLRT. All rights reserved.</span>
+        </div>
       </footer>
 
       {bookingDate && (
-        <div className="overlay show" onClick={(e)=>{ if(e.target.classList.contains('overlay')) closeBookingModal(); }}>
+        <div className={"overlay" + (modalVisible ? " show" : "")} onClick={(e)=>{ if(e.target.classList.contains('overlay')) closeBookingModal(); }}>
           <div className="modal" ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="book-title" aria-describedby="book-date">
+            <div className="modal-grid">
+            <div className="modal-side">
             <h3 id="book-title">Request this date</h3>
             <div className="sub" id="book-date">{new Date(bookingDate+'T00:00:00').toLocaleDateString(undefined,{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</div>
 
             {slotsFor(bookingDate).length > 0 && (
               <div className="taken-slots">
                 <b>Already booked this day</b>
-                <ul>
-                  {slotsFor(bookingDate).map((r,idx)=> <li key={idx}>{formatRange(r)}</li>)}
-                </ul>
+                <div className="slot-chips">
+                  {slotsFor(bookingDate).slice(0, 6).map((r,idx)=> <span className="slot-chip" key={idx}>{formatRange(r)}</span>)}
+                  {slotsFor(bookingDate).length > 6 && (
+                    <span className="slot-chip more">+{slotsFor(bookingDate).length - 6} more</span>
+                  )}
+                </div>
                 <span className="small">{firstName} needs {bufferMinutes} minutes between gigs to pack up and travel.</span>
               </div>
             )}
+            </div>
 
-            <form onSubmit={submitBooking}>
-              <div className="time-row">
+            <form className="book-form" onSubmit={submitBooking}>
+              <div className="field-pair times">
                 <div className="field"><label htmlFor="f-start">Start time</label><input id="f-start" type="time" required value={bookForm.start_time} onChange={e=>setBookForm({...bookForm,start_time:e.target.value})}/></div>
                 <div className="field"><label htmlFor="f-end">End time</label><input id="f-end" type="time" required value={bookForm.end_time} onChange={e=>setBookForm({...bookForm,end_time:e.target.value})}/></div>
               </div>
               {clashMessage() && <div className="clash-warn" role="alert">{clashMessage()}</div>}
-              <div className="field"><label htmlFor="f-name">Your name</label><input id="f-name" required autoComplete="name" value={bookForm.name} onChange={e=>setBookForm({...bookForm,name:e.target.value})}/></div>
-              <div className="field"><label htmlFor="f-phone">Phone</label><input id="f-phone" type="tel" required autoComplete="tel" placeholder="0917 123 4567" value={bookForm.phone} onChange={e=>setBookForm({...bookForm,phone:e.target.value})}/></div>
-              <div className="field"><label htmlFor="f-email">Email</label><input id="f-email" type="email" required autoComplete="email" value={bookForm.email} onChange={e=>setBookForm({...bookForm,email:e.target.value})}/></div>
-              <div className="field">
-                <label htmlFor="f-type">Event type</label>
-                <select id="f-type" value={bookForm.type} onChange={e=>setBookForm({...bookForm,type:e.target.value})}>
-                  <option>Wedding</option><option>Private party</option><option>Corporate event</option><option>Club / bar gig</option><option>Other</option>
-                </select>
+              <div className="field-pair">
+                <div className="field"><label htmlFor="f-name">Your name</label><input id="f-name" required autoComplete="name" value={bookForm.name} onChange={e=>setBookForm({...bookForm,name:e.target.value})}/></div>
+                <div className="field"><label htmlFor="f-phone">Phone</label><input id="f-phone" type="tel" required autoComplete="tel" placeholder="0917 123 4567" value={bookForm.phone} onChange={e=>setBookForm({...bookForm,phone:e.target.value})}/></div>
+              </div>
+              <div className="field-pair">
+                <div className="field"><label htmlFor="f-email">Email</label><input id="f-email" type="email" required autoComplete="email" value={bookForm.email} onChange={e=>setBookForm({...bookForm,email:e.target.value})}/></div>
+                <div className="field">
+                  <label htmlFor="f-type">Event type</label>
+                  <select id="f-type" value={bookForm.type} onChange={e=>setBookForm({...bookForm,type:e.target.value})}>
+                    <option>Wedding</option><option>Private party</option><option>Corporate event</option><option>Club / bar gig</option><option>Other</option>
+                  </select>
+                </div>
               </div>
               <div className="field"><label htmlFor="f-msg">Tell me about the event</label><textarea id="f-msg" value={bookForm.message} onChange={e=>setBookForm({...bookForm,message:e.target.value})} placeholder="Venue, style of music, song requests, anything else"/></div>
 
@@ -383,12 +474,19 @@ export default function Home({ initialProfile, siteUrl }){
                 shared or used for marketing.
                 {profile.email && <> To have your details deleted, email <a href={`mailto:${profile.email}`}>{profile.email}</a>.</>}
               </p>
+
+              <label className="consent">
+                <input type="checkbox" required checked={consent} onChange={e=>setConsent(e.target.checked)} />
+                <span>I have read and agree to the collection and use of my personal information for the purpose of processing and managing my booking request.</span>
+              </label>
+
               <div className="modal-actions">
                 <button type="button" className="btn btn-close" onClick={closeBookingModal}>Cancel</button>
-                <button type="submit" className="btn btn-primary" disabled={!!clashMessage() || sending}>{sending ? 'Sending…' : 'Send request'}</button>
+                <button type="submit" className="btn btn-primary" disabled={!!clashMessage() || sending || !consent}>{sending ? 'Sending…' : 'Send request'}</button>
               </div>
               {bookMsg && <div className="msg" role="status">{bookMsg}</div>}
             </form>
+            </div>
           </div>
         </div>
       )}
@@ -423,7 +521,7 @@ function Calendar({ today, currentMonth, setCurrentMonth, statusFor, slotsFor, o
       <div className="cal-grid" aria-hidden="true">
         {DOW.map((d,i)=> <div className="cal-dow" key={i}>{d}</div>)}
       </div>
-      <div className="cal-grid">
+      <div className="cal-grid cal-days" key={`${year}-${month}`}>
         {cells.map((day, i)=>{
           if(day === null) return <div className="cal-day empty" key={i} aria-hidden="true"></div>;
           const d = new Date(year, month, day);

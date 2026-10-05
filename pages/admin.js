@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import Head from 'next/head';
+import ThemeToggle from '../components/ThemeToggle';
 import s from '../styles/Admin.module.css';
 import { todayKey } from '../lib/timezone';
 import { formatRange, formatTime } from '../lib/slots';
@@ -22,7 +23,7 @@ function niceDate(key, opts){
 }
 
 // Shrinks an uploaded photo so it can be stored straight in the profile.
-function fileToResizedDataUrl(file, maxSize = 600, quality = 0.85){
+function fileToResizedDataUrl(file, maxSize = 1200, quality = 0.85){
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -98,6 +99,7 @@ function Login({ onLogIn, notice }){
 
   return (
     <main className={s.loginWrap}>
+      <div className={s.loginTool}><ThemeToggle /></div>
       <form className={s.loginCard} onSubmit={submit}>
         <h1 className={s.loginTitle}>Bookings</h1>
         <p className={s.loginNote}>{notice || 'Log in to answer requests and manage your calendar.'}</p>
@@ -176,6 +178,7 @@ function Dashboard({ token, onLogOut }){
         <div className={s.barLinks}>
           <a className={s.barLink} href="/" target="_blank" rel="noreferrer">View site</a>
           <button className={s.barLink} onClick={()=>onLogOut('You’ve logged out.')}>Log out</button>
+          <ThemeToggle />
         </div>
       </header>
 
@@ -479,7 +482,6 @@ function Profile({ profile, api, flash, onSaved }){
   const [form, setForm] = useState({
     ...profile,
     videos: profile.videos || '',
-    venues: profile.venues || '',
     testimonials: Array.isArray(profile.testimonials) ? profile.testimonials : [],
   });
   const [saving, setSaving] = useState(false);
@@ -534,7 +536,7 @@ function Profile({ profile, api, flash, onSaved }){
 
         <label className={s.field}><span>Name</span><input value={form.name || ''} onChange={set('name')} /></label>
         <label className={s.field}><span>Tagline</span><input value={form.tagline || ''} onChange={set('tagline')} /></label>
-        <label className={s.field}><span>Bio</span><textarea value={form.bio || ''} onChange={set('bio')} /></label>
+        <label className={s.field + ' ' + s.span2}><span>Bio</span><textarea value={form.bio || ''} onChange={set('bio')} /></label>
         <div className={s.two}>
           <label className={s.field}><span>Email</span><input type="email" value={form.email || ''} onChange={set('email')} /></label>
           <label className={s.field}><span>Instagram</span><input value={form.instagram || ''} onChange={set('instagram')} /></label>
@@ -582,12 +584,6 @@ function Profile({ profile, api, flash, onSaved }){
             <button type="button" className={s.addBtn} onClick={addQuote}>{quotes.length ? 'Add another quote' : 'Add a quote'}</button>
           )}
         </div>
-
-        <label className={s.field}>
-          <span>Venues played</span>
-          <textarea value={form.venues} onChange={set('venues')} placeholder={'Clark Marriott\nBlackfish\nThe Farm at San Benito'} />
-          <small className={s.hint}>One per line. Shown as a list on the site.</small>
-        </label>
 
         <h3 className={s.groupTitle}>Scheduling</h3>
         <label className={s.field}>
